@@ -89,7 +89,19 @@ pub struct Session {
     pub wait_type: String, pub wait: String, pub kind: String, pub started: String, pub query_started: String,
     pub query_age: Option<f64>, pub xact_age: Option<f64>, pub state_age: Option<f64>, pub query: String, pub blockers: Vec<i32>,
 }
+#[derive(Debug, PartialEq, Eq)]
+pub enum QueryAgeBand { Normal, Green, Yellow, Red }
 impl Session {
+    pub fn query_age_band(&self) -> QueryAgeBand {
+        use QueryAgeBand::*;
+        if self.state!="active" || self.kind!="client backend" {return Normal;}
+        match self.query_age {
+            Some(t) if t.is_finite() && t>=10.0 => Red,
+            Some(t) if t.is_finite() && t>=5.0 => Yellow,
+            Some(t) if t.is_finite() && t>=2.0 => Green,
+            _=>Normal
+        }
+    }
     pub fn key(&self) -> (i32, String) { (self.pid, self.started.clone()) }
     pub fn matches(&self, filter: &str) -> bool {
         let f = filter.trim().to_lowercase();
@@ -122,6 +134,22 @@ pub fn blocker_chain(sessions: &[Session], target: i32) -> Vec<(i32,i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn query_age_bands_exact_boundaries() {
+        use QueryAgeBand::*;
+        for (t,want) in [(0.0,Normal),(1.999,Normal),(2.0,Green),(4.999,Green),(5.0,Yellow),(9.999,Yellow),(10.0,Red),(3600.0,Red),(f64::NAN,Normal),(f64::INFINITY,Normal)] {
+            let s=Session{state:"active".into(),kind:"client backend".into(),query_age:Some(t),..Default::default()};
+            assert_eq!(s.query_age_band(),want);
+        }
+    }
+    #[test] fn query_age_excludes_idle_and_replication() {
+        use QueryAgeBand::*;
+        for (state,kind) in [("idle","client backend"),("idle in transaction","client backend"),("active","walsender"),("active","autovacuum worker")]{
+            let s=Session{state:state.into(),kind:kind.into(),query_age:Some(1000.0),..Default::default()};
+            assert_eq!(s.query_age_band(),Normal);
+        }
+        let s=Session{state:"active".into(),kind:"client backend".into(),query_age:None,..Default::default()};
+        assert_eq!(s.query_age_band(),Normal);
+    }
     #[test] fn profile_has_no_password() { let s = toml::to_string(&Profile::default()).unwrap(); assert!(!s.contains("password")); }
     #[test] fn profile_rejects_multi_host() { let mut p = Profile::default(); p.host = "a,b".into(); assert!(p.validate().is_err()); }
     #[test] fn lock_has_priority() { let s = Session { state: "active".into(), wait_type: "Lock".into(), ..Default::default() }; assert_eq!(s.status(), "LOCK"); }

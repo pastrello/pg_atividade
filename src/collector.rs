@@ -103,11 +103,25 @@ fn audit(p: &Profile, s: &Session, action: Action, result: &str) -> Result<(),St
     writeln!(file,"unix={} profile={} pid={} action={} outcome={}",ts,p.id,s.pid,if action==Action::Cancel {"cancel"}else{"terminate"},result).map_err(|_| "Falha ao gravar auditoria")?;
     file.sync_data().map_err(|_| "Falha ao persistir auditoria".into())
 }
-pub async fn perform(p: Profile, secret: Secret, s: Session, expected_instance: String, action: Action) -> Result<String,String> {
+fn transport_allowed(tls:bool, action:Action, allow_plain_cancel:bool)->bool{
+    tls || (action==Action::Cancel && allow_plain_cancel)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn admin_transport_policy(){
+        assert!(transport_allowed(true,Action::Cancel,false));
+        assert!(transport_allowed(true,Action::Terminate,false));
+        assert!(!transport_allowed(false,Action::Cancel,false));
+        assert!(transport_allowed(false,Action::Cancel,true));
+        assert!(!transport_allowed(false,Action::Terminate,true));
+    }
+}
+pub async fn perform(p: Profile, secret: Secret, s: Session, expected_instance: String, action: Action, allow_plain_cancel: bool) -> Result<String,String> {
     if s.started.is_empty() || s.pid <= 0 || s.kind != "client backend" || s.app.starts_with("PGActivity-RS ") { return Err("Sessão não elegível".into()); }
     if action==Action::Cancel && (s.state!="active" || s.query_started.is_empty()) { return Err("Não há consulta ativa elegível".into()); }
-    if !p.tls { return Err("Ações administrativas exigem TLS validado".into()); }
-    audit(&p,&s,action,"requested")?;
+    if !transport_allowed(p.tls,action,allow_plain_cancel) { return Err("TLS validado ou confirmação explícita para cancelamento sem TLS exigidos".into()); }
+    audit(&p,&s,action,if p.tls{"requested_tls"}else{"requested_plain_cancel_explicit"})?;
     let outcome = async {
         let conn = connect(&p,&secret,true).await?;
         let id = identity(&conn.client).await?;
