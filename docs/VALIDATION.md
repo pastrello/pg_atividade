@@ -1,10 +1,10 @@
-# Plano de validação 0.1.1
+# Plano de validação 0.2.0
 
-0.1.0: CI Windows e seis testes SQL passaram; monitoramento Windows PG16 confirmado pelo usuário. 0.1.1: validações abaixo a executar.
+0.1.0: CI Windows e seis testes SQL passaram; monitoramento Windows PG16 confirmado pelo usuário. 0.1.1: CI concluída e execução confirmada pelo usuário. 0.2.0: validações abaixo a executar.
 
 ## Automáticos
 
-- `cargo test --locked --target x86_64-pc-windows-msvc`: oito testes unitários de modelo, perfil, filtro, status e grafo de locks.
+- `cargo test --locked --target x86_64-pc-windows-msvc`: doze testes unitários de modelo, perfil, filtro, status e grafo de locks.
 - `scripts/test-sql.sh`: SQL de identificação, atividade e teste de lock real; use somente PostgreSQL descartável, com `PGACTIVITY_TEST_DISPOSABLE=1`. CI PostgreSQL 13–18. Verificar manualmente também privilégio parcial e nomes de colunas.
 - `cargo build --release --locked --target x86_64-pc-windows-msvc`: compilação do executável; CI gera artifact, não release estável.
 - Revisão futura: `cargo audit` / `cargo deny` após geração do lockfile; nenhuma auditoria de dependências executada nesta entrega.
@@ -23,4 +23,7 @@
 
 10. Verificar contraste, <2 s neutra, >=2 verde, >=5 amarela, >=10 vermelha, replicação/idle sem destaque. Usar botão direito no PID e SQL, comparar clipboard e arquivo UTF-8 com consulta capturada, verificar que não sobrescreve arquivo existente. Testar cancelamento sem TLS apenas em laboratório privado: sem checkbox não envia; com confirmação e PID correto cancela; troca de instância ou consulta aborta. Verificar auditoria e ausência de encerramento sem TLS.
 
+11. Botão Queries > 1s: execute SELECT pg_sleep(20) em laboratório, confirme inclusão após 1 s na primeira coleta elegível e remoção após fim; idle, walsender e manutenção excluídos. Testar filtros combinados.
+12. Validar TPS/commit/rollback, cache hit no intervalo, temporários, WAL e I/O contra duas amostras SQL. Confirmar N/D nas versões sem a view, — na primeira amostra/reset, comportamento em reconexão, e ausência de taxa negativa. PG18: validar I/O por PID em atividade prolongada e eventual atraso de flush. Medir impacto de coleta em 682+ processos. 
+   
 Critério de promoção: compilação e testes aprovados, validação visual e de segurança, resultados de carga registrados, nenhuma regressão crítica. Até lá, 0.1.0 é candidata para laboratório, não produção.

@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod collector;
 mod model;
+mod metrics;
 use collector::{Secret, Shared, State};
 use eframe::egui::{self, Color32, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -17,7 +18,7 @@ struct Confirm { profile: Uuid, session: Session, action: Action, typed: String,
 struct SaveQuery { path: String, query: String, error: String }
 struct App {
     runtime: Runtime, profiles: Vec<Profile>, workers: HashMap<Uuid, Worker>, selected: Option<Uuid>,
-    editor: Option<Editor>, password: Zeroizing<String>, filter: String, only_active: bool, locks_only: bool,
+    editor: Option<Editor>, password: Zeroizing<String>, filter: String, only_active: bool, locks_only: bool, slow_only: bool,
     selected_session: Option<(i32,String)>, frozen: Option<State>, sort: usize, descending: bool, dark: bool,
     admin: bool, confirm: Option<Confirm>, action_busy: bool, action_result: Arc<Mutex<Option<Result<String,String>>>>,
     message: String, storage_ok: bool, plain_confirm: bool, save_query: Option<SaveQuery>,
@@ -50,13 +51,21 @@ fn highlighted(text: String, shade: Option<Color32>) -> RichText {
     let t = RichText::new(text);
     if let Some(c) = shade {t.color(c).strong()} else {t}
 }
+fn number(x:Option<f64>)->String{x.map(|v|format!("{v:.1}")).unwrap_or_else(||"—".into())}
+fn bytes(x:Option<f64>)->String{
+    let Some(v)=x else{return "—".into();};
+    if v>=1024.0*1024.0*1024.0{format!("{:.2} GiB/s",v/(1024.0*1024.0*1024.0))}
+    else if v>=1024.0*1024.0{format!("{:.2} MiB/s",v/(1024.0*1024.0))}
+    else if v>=1024.0{format!("{:.1} KiB/s",v/1024.0)}
+    else{format!("{v:.0} B/s")}
+}
 fn age(x: Option<f64>) -> String { match x { Some(v) if v.is_finite() => format!("{:.1}s",v.max(0.0)), _=>"—".into() } }
 impl App {
     fn new(runtime: Runtime, ctx: &egui::Context) -> Self {
         ctx.set_visuals(theme(true));
         let (profiles,storage_ok,message)=match model::load_profiles(){Ok(p)=>(p,true,String::new()),Err(e)=>(vec![],false,e)};
         let selected=profiles.first().map(|p|p.id);
-        Self {runtime,profiles,workers:HashMap::new(),selected,editor:None,password:Zeroizing::new(String::new()),filter:String::new(),only_active:false,locks_only:false,selected_session:None,frozen:None,sort:7,descending:true,dark:true,admin:false,confirm:None,action_busy:false,action_result:Arc::new(Mutex::new(None)),message,storage_ok,plain_confirm:false,save_query:None}
+        Self {runtime,profiles,workers:HashMap::new(),selected,editor:None,password:Zeroizing::new(String::new()),filter:String::new(),only_active:false,locks_only:false,slow_only:false,selected_session:None,frozen:None,sort:7,descending:true,dark:true,admin:false,confirm:None,action_busy:false,action_result:Arc::new(Mutex::new(None)),message,storage_ok,plain_confirm:false,save_query:None}
     }
     fn choose(&mut self,id:Uuid) { if self.selected!=Some(id) { self.selected=Some(id); self.password.zeroize(); self.selected_session=None; self.frozen=None; self.admin=false; self.confirm=None; self.plain_confirm=false; } }
     fn persist(&mut self, next: Vec<Profile>) -> bool {
@@ -239,7 +248,10 @@ impl App {
         if let Some(t)=display.last{ui.small(format!("Última amostra: {:.1}s atrás",t.elapsed().as_secs_f64()));}
         let Some(snap)=display.snapshot else{ui.spinner();return;};
         let instance=display.identity.as_ref().map(|id|id.instance.as_str()).unwrap_or("");
-        self.activity(ui,ctx,&snap,p,instance);
+        if let Some(m)=display.metrics.as_deref(){
+            self.metrics_bar(ui,m);
+        }else{ui.small("Métricas PostgreSQL: aguardando primeira coleta.");}
+        self.activity(ui,ctx,&snap,p,instance,display.metrics.as_deref());
     }
     fn eligible(&self,s:&Session,instance:&str)->bool{
         self.admin&&self.frozen.is_none()&&!self.action_busy&&!instance.is_empty()&&s.kind=="client backend"&&!s.started.is_empty()&&!s.app.starts_with("PGActivity-RS ")
@@ -251,7 +263,41 @@ impl App {
         if ui.add_enabled(self.eligible(s,instance)&&s.state=="active"&&!s.query_started.is_empty(),egui::Button::new("Cancelar consulta")).clicked(){self.request_cancel(p.id,instance,s,Action::Cancel);ui.close_menu();}
         if !self.admin{ui.small("Habilite a ação administrativa para cancelar.");}
     }
-    fn activity(&mut self,ui:&mut egui::Ui,ctx:&egui::Context,snap:&Snapshot,p:&Profile,instance:&str){
+    fn metrics_bar(&self,ui:&mut egui::Ui,m:&metrics::Metrics){
+        ui.group(|ui|{
+            ui.horizontal_wrapped(|ui|{
+                ui.strong("Métricas PostgreSQL — instância");
+                if let Some(t)=m.sampled{ui.small(format!("amostra {:.0}s",t.elapsed().as_secs_f64()));}
+                ui.small("Taxas de contadores cumulativos; não são I/O físico.");
+            });
+            ui.horizontal_wrapped(|ui|{
+                let db=m.db.as_ref();
+                ui.label(format!("TPS: {}",number(db.map(|r|r[0]+r[1]))));
+                ui.label(format!("Commit/s: {}",number(db.map(|r|r[0]))));
+                ui.label(format!("Rollback/s: {}",number(db.map(|r|r[1]))));
+                let hit=db.and_then(|r|{let total=r[3]+r[4];(total>0.0).then(||100.0*r[3]/total)});
+                ui.label(format!("Cache hit: {}",hit.map(|v|format!("{v:.1}%")).unwrap_or_else(||"—".into())));
+                ui.label(format!("Temp/s: {}",bytes(db.map(|r|r[5]))));
+                ui.label(format!("Deadlocks/s: {}",number(db.map(|r|r[6]))));
+            });
+            ui.horizontal_wrapped(|ui|{
+                if m.version>=160000 {
+                    ui.label(format!("READ/s: {}",bytes(m.io.as_ref().map(|r|r[0]))));
+                    ui.label(format!("WRITE+EXTEND/s: {}",bytes(m.io.as_ref().map(|r|r[1]))));
+                    ui.label(format!("Reads/s: {}",number(m.io.as_ref().map(|r|r[2]))));
+                    ui.label(format!("Writes+extends/s: {}",number(m.io.as_ref().map(|r|r[3]))));
+                }else{
+                    ui.label(format!("Leitura de blocos/s (est.): {}",bytes(m.db.as_ref().map(|r|r[2]))));
+                    ui.label("Escrita/s: N/D nesta versão");
+                }
+                if m.version>=140000{ui.label(format!("WAL gerado/s: {}",bytes(m.wal.as_ref().map(|r|r[0]))));}
+                else{ui.label("WAL/s: N/D nesta versão");}
+            });
+            if m.version>=180000{ui.small("I/O por PID: até 128 consultas ativas, requer visibilidade de estatísticas; — = sem duas amostras válidas.");}
+            for e in &m.errors{ui.small(format!("Métrica indisponível: {e}"));}
+        });
+    }
+    fn activity(&mut self,ui:&mut egui::Ui,ctx:&egui::Context,snap:&Snapshot,p:&Profile,instance:&str,metrics:Option<&metrics::Metrics>){
         let sessions=&snap.sessions;
         let active=sessions.iter().filter(|s|s.state=="active").count();let locks=sessions.iter().filter(|s|s.wait_type=="Lock").count();let idle_tx=sessions.iter().filter(|s|s.state.starts_with("idle in transaction")).count();
         ui.horizontal_wrapped(|ui|{
@@ -259,7 +305,7 @@ impl App {
             ui.colored_label(Color32::from_rgb(70,177,116),format!("Ativas: {active}"));ui.colored_label(Color32::from_rgb(234,85,85),format!("Locks: {locks}"));ui.colored_label(Color32::from_rgb(186,122,225),format!("Idle in TX: {idle_tx}"));
         });
         if snap.truncated{ui.colored_label(Color32::YELLOW,"Amostra limitada a 5.000 processos; contadores parciais.");}
-        ui.horizontal_wrapped(|ui|{ui.label("Filtro");ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("PID, usuário, SQL, IP, wait..."));ui.checkbox(&mut self.only_active,"Ativas");ui.checkbox(&mut self.locks_only,"Somente locks");});
+        ui.horizontal_wrapped(|ui|{ui.label("Filtro");ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("PID, usuário, SQL, IP, wait..."));ui.checkbox(&mut self.only_active,"Ativas");ui.checkbox(&mut self.locks_only,"Somente locks");if ui.selectable_label(self.slow_only,"Queries > 1s").clicked(){self.slow_only=!self.slow_only;}});
         ui.horizontal_wrapped(|ui|{
             ui.small("Duração de consultas ativas:");
             for (age,band) in [(2.0,"≥2s"),(5.0,"≥5s"),(10.0,"≥10s")]{
@@ -268,18 +314,22 @@ impl App {
             }
             ui.small("Botão direito no PID ou SQL para ações.");
         });
-        let mut rows:Vec<&Session>=sessions.iter().filter(|s|s.matches(&self.filter)&&(!self.only_active||s.state=="active")&&(!self.locks_only||s.wait_type=="Lock")).collect();
+        let mut rows:Vec<&Session>=sessions.iter().filter(|s|s.matches(&self.filter)&&(!self.only_active||s.state=="active")&&(!self.locks_only||s.wait_type=="Lock")&&(!self.slow_only||s.is_slow_query())).collect();
+        let show_pid=metrics.is_some_and(|m|m.version>=180000);
+        if !show_pid&&self.sort>=11{self.sort=7;self.descending=true;}
         let sort=self.sort;let descending=self.descending;
-        rows.sort_by(|a,b|{let ord=match sort{0=>a.pid.cmp(&b.pid),1=>a.db.cmp(&b.db),2=>a.user.cmp(&b.user),3=>a.app.cmp(&b.app),4=>a.ip.cmp(&b.ip),5=>a.state.cmp(&b.state),6=>a.wait.cmp(&b.wait),7=>a.query_age.unwrap_or(-1.0).total_cmp(&b.query_age.unwrap_or(-1.0)),8=>a.xact_age.unwrap_or(-1.0).total_cmp(&b.xact_age.unwrap_or(-1.0)),9=>a.blockers.len().cmp(&b.blockers.len()),_=>a.query.cmp(&b.query)}; (if descending{ord.reverse()}else{ord}).then(a.pid.cmp(&b.pid))});
+        let rate=|s:&Session,i:usize|metrics.and_then(|m|m.pid_rate(s.pid,&s.started)).map(|r|r[i]);
+        rows.sort_by(|a,b|{let ord=match sort{0=>a.pid.cmp(&b.pid),1=>a.db.cmp(&b.db),2=>a.user.cmp(&b.user),3=>a.app.cmp(&b.app),4=>a.ip.cmp(&b.ip),5=>a.state.cmp(&b.state),6=>a.wait.cmp(&b.wait),7=>a.query_age.unwrap_or(-1.0).total_cmp(&b.query_age.unwrap_or(-1.0)),8=>a.xact_age.unwrap_or(-1.0).total_cmp(&b.xact_age.unwrap_or(-1.0)),9=>a.blockers.len().cmp(&b.blockers.len()),11=>rate(a,0).unwrap_or(-1.0).total_cmp(&rate(b,0).unwrap_or(-1.0)),12=>rate(a,1).unwrap_or(-1.0).total_cmp(&rate(b,1).unwrap_or(-1.0)),_=>a.query.cmp(&b.query)}; (if descending{ord.reverse()}else{ord}).then(a.pid.cmp(&b.pid))});
         ui.small(format!("{} linhas visíveis",rows.len()));
-        let headings=["PID","Banco","Usuário","Aplicação","IP","Estado","Wait event","Consulta (s)","Transação","Bloqueadores","SQL"];
-        let widths=[62.,95.,85.,100.,100.,95.,130.,82.,82.,92.,300.];
+        let mut headings=vec!["PID","Banco","Usuário","Aplicação","IP","Estado","Wait event","Consulta (s)","Transação","Bloqueadores","SQL"];
+        let mut widths=vec![62.,95.,85.,100.,100.,95.,130.,82.,82.,92.,300.];
+        if show_pid{headings.extend(["READ/s","WRITE/s"]);widths.extend([105.,105.]);}
         let height=(ui.available_height()-if self.selected_session.is_some(){225.0}else{20.0}).max(130.0);
         let mut picked=None;
         egui::ScrollArea::horizontal().id_salt("activity_x").show(ui,|ui|{
             let mut table=TableBuilder::new(ui).striped(true).resizable(true).max_scroll_height(height).min_scrolled_height(100.0);
             for w in widths {table=table.column(Column::initial(w).at_least(45.0).clip(true));}
-            table.header(25.0,|mut header|{for (i,h) in headings.iter().enumerate(){header.col(|ui|{let label=if self.sort==i{format!("{} {}",h,if self.descending{"▼"}else{"▲"})}else{h.to_string()};if ui.button(label).clicked(){if self.sort==i{self.descending=!self.descending;}else{self.sort=i;self.descending=matches!(i,7|8|9);}}});}})
+            table.header(25.0,|mut header|{for (i,h) in headings.iter().enumerate(){header.col(|ui|{let label=if self.sort==i{format!("{} {}",h,if self.descending{"▼"}else{"▲"})}else{h.to_string()};if ui.button(label).clicked(){if self.sort==i{self.descending=!self.descending;}else{self.sort=i;self.descending=matches!(i,7|8|9|11|12);}}});}})
             .body(|body|{body.rows(23.0,rows.len(),|mut row|{
                 let s=rows[row.index()];
                 let shade=duration_color(s,self.dark);
@@ -302,6 +352,10 @@ impl App {
                     response.context_menu(|ui|{self.query_menu(ui,ctx,s,p,instance);});
                     });
                 });
+                if show_pid{
+                    row.col(|ui|{ui.label(bytes(rate(s,0)));});
+                    row.col(|ui|{ui.label(bytes(rate(s,1)));});
+                }
             });});
         });
         if let Some(k)=picked{self.selected_session=Some(k);}

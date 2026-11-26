@@ -43,3 +43,15 @@ done
 # Exercise collector SQL in presence of real lock chain.
 "${PSQL[@]}" -f sql/activity.sql
 printf 'PASS: collector SQL and lock detection\n'
+
+# Smoke native metrics with exact version-specific SQL on disposable CI server.
+version=$("${PSQL[@]}" -Atc "SHOW server_version_num")
+"${PSQL[@]}" -f sql/metrics_db.sql
+if (( version >= 140000 )); then "${PSQL[@]}" -f sql/metrics_wal.sql; fi
+if (( version >= 180000 )); then
+  "${PSQL[@]}" -f sql/metrics_io18.sql
+  "${PSQL[@]}" -f sql/metrics_pid18.sql
+elif (( version >= 160000 )); then
+  "${PSQL[@]}" -f sql/metrics_io16.sql
+fi
+printf 'PASS: version-specific metrics SQL\n'

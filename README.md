@@ -1,6 +1,6 @@
-# PGActivity-RS 0.1.1 — candidato a teste
+# PGActivity-RS 0.2.0 — candidato a teste
 
-Monitor desktop Windows x64 para PostgreSQL, escrito em Rust (egui/eframe, Tokio e tokio-postgres). Independente do DBOSS e sem agente ou extensão obrigatória. O código foi elaborado para PostgreSQL 13–18; A versão 0.1.0 passou na CI Windows e SQL PG13–18 e foi testada pelo usuário; a 0.1.1 requer nova validação.
+Monitor desktop Windows x64 para PostgreSQL, escrito em Rust (egui/eframe, Tokio e tokio-postgres). Independente do DBOSS e sem agente ou extensão obrigatória. O código foi elaborado para PostgreSQL 13–18; A versão 0.1.0 passou na CI Windows e SQL PG13–18 e foi testada pelo usuário; a 0.1.1 também passou na CI e rodou no Windows; a 0.2.0 requer nova validação.
 
 ## Compilar no Windows
 
@@ -28,6 +28,14 @@ Para obter pelo GitHub Actions, publique o projeto em um repositório novo, habi
 - Clique com o botão direito no PID ou SQL (ou selecione a linha) para copiar, salvar SQL capturado em arquivo UTF-8 sem sobrescrever ou cancelar. A exportação não executa SQL, não é automática e pode conter dados sensíveis. O destaque 2/5/10 s se aplica apenas a consultas ativas de client backend; verde, amarelo e vermelho, respectivamente.
 - Desconectar interrompe o worker. Ações administrativas já enviadas não podem ser desfeitas.
 
+## Métricas e filtro (0.2.0)
+
+- Botão **Queries > 1s**: mostra apenas consultas de clientes em estado active e duração > 1 s; desaparecem após terminar, na próxima amostra. Inclui espera por lock/I/O; não inclui replicação, manutenção ou idle. Combina com filtros existentes.
+- PostgreSQL 13+: TPS, commits/rollbacks, cache hit no intervalo, leitura de blocos estimada, temporários e deadlocks (todos os bancos da instância).
+- PostgreSQL 14+: WAL gerado/s; 16–17: I/O agregado de relações e temporárias via pg_stat_io (op_bytes); 18+: bytes nativos e I/O por PID ativo, até 128 processos priorizados por query_start, quando houver visibilidade. Escrita inclui extensão; WAL separado, não somar as métricas. I/O por PID mede o backend, não exclusivamente a consulta atual.
+- Taxas calculadas entre duas amostras, coleta extra a cada pelo menos 5 s; primeira amostra, resets, regressões, dados não disponíveis e lacunas longas mostram —, não zero inventado. Contadores podem atualizar com atraso. Não representam disco físico, CPU, RAM ou upload/download.
+- Nenhuma mudança de configuração, SSH, extensão ou agente.
+
 ## Usuário alternativo (opcional)
 
 Como DBA, execute em psql:
@@ -46,7 +54,7 @@ Defina a senha interativamente com `\password pgactivity_monitor`. Conceda CONNE
 
 - Coleta `pg_stat_activity` e `pg_blocking_pids()`; no máximo 5.000 processos por amostra, texto SQL até 8.192 caracteres (também limitado pelo servidor). Não confundir sessão ativa com consumo de CPU. Contadores representam processos presentes na amostra, não `max_connections`.
 - Locks consultados apenas para sessões em espera do tipo Lock. PID 0 pode representar transação preparada. A árvore é textual, não um grafo visual.
-- Não há métricas de host, top queries, TPS, WAL, replicação detalhada, estatísticas de I/O, histórico, exportação em lote, organização em pastas, ou instalador ainda. Essas funções estão no roadmap.
+- Não há métricas de host, top queries, replicação detalhada, histórico, exportação em lote, organização em pastas, ou instalador ainda. Essas funções estão no roadmap.
 - Cada perfil conectado usa uma conexão persistente. Timeout de consulta 5 s no servidor / 7 s cliente; reconexão progressiva 2–60 s. Não há coleta em transações longas.
 - Não há testes de carga ou validação visual executados. Compatibilidade Windows 10/11 x64 e PostgreSQL 13–18 é alvo, não certificação. PostgreSQL 13/14 são legados fora do suporte upstream nesta data.
 
