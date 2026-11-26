@@ -1,0 +1,27 @@
+[package]
+name = "pgactivity"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "x11"] }
+egui_extras = "0.31.1"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "macros", "sync"] }
+tokio-postgres = "0.7"
+tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zeroize = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
