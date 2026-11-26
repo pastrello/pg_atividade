@@ -284,9 +284,11 @@ impl App {
                 let s=rows[row.index()];
                 let shade=duration_color(s,self.dark);
                 row.col(|ui|{
+                    ui.push_id((s.pid,&s.started,&s.query_started,&s.state),|ui|{
                     let response=ui.selectable_label(self.selected_session.as_ref().is_some_and(|k|*k==s.key()),highlighted(s.pid.to_string(),shade));
                     if response.clicked(){picked=Some(s.key());}
                     response.context_menu(|ui|{self.query_menu(ui,ctx,s,p,instance);});
+                    });
                 });
                 for text in [&s.db,&s.user,&s.app,&s.ip]{row.col(|ui|{ui.add(egui::Label::new(text.as_str()).truncate());});}
                 row.col(|ui|{ui.add(egui::Label::new(RichText::new(s.status()).color(color(s,self.dark))).truncate());});
@@ -294,9 +296,11 @@ impl App {
                 row.col(|ui|{ui.label(highlighted(age(s.query_age),shade));});row.col(|ui|{ui.label(age(s.xact_age));});
                 row.col(|ui|{ui.add(egui::Label::new(s.blockers.iter().map(i32::to_string).collect::<Vec<_>>().join(", ")).truncate());});
                 row.col(|ui|{
+                    ui.push_id((s.pid,&s.started,&s.query_started,&s.state),|ui|{
                     let response=ui.add(egui::Label::new(highlighted(s.query.replace(['\n','\r']," "),shade)).sense(egui::Sense::click()).truncate());
                     if response.clicked(){picked=Some(s.key());}
                     response.context_menu(|ui|{self.query_menu(ui,ctx,s,p,instance);});
+                    });
                 });
             });});
         });
