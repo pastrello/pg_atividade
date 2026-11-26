@@ -8,7 +8,7 @@ pub type Secret = Arc<Zeroizing<String>>;
 #[derive(Clone, Default)]
 pub struct State {
     pub identity: Option<Identity>, pub snapshot: Option<Arc<Snapshot>>, pub last: Option<Instant>,
-    pub online: bool, pub message: String,
+    pub online: bool, pub message: String, pub metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 pub type Shared = Arc<Mutex<State>>;
 struct Connection { client: Client, driver: JoinHandle<()> }
@@ -80,13 +80,24 @@ pub async fn run(p: Profile, secret: Secret, state: Shared, wake: Arc<tokio::syn
                 Err(e) => e,
                 Ok(id) if id.version_num < 130000 => "PostgreSQL anterior à versão 13 não suportado".into(),
                 Ok(id) => {
-                    { let mut s = state.lock().unwrap(); s.identity = Some(id); s.snapshot = None; s.last = None; }
+                    let version=id.version_num;
+                    let read_all=id.superuser||id.read_all;
+                    { let mut s = state.lock().unwrap(); s.identity = Some(id); s.snapshot = None; s.last = None; s.metrics=None; }
+                    let mut metrics=crate::metrics::Collector::default();
+                    let mut next_metrics=Instant::now();
                     loop {
                         match collect(&conn.client).await {
                             Ok(snap) => { let mut s = state.lock().unwrap(); s.snapshot = Some(Arc::new(snap)); s.last = Some(Instant::now()); s.online = true; s.message = "Conectado".into(); backoff = 2; }
                             Err(e) => break e,
                         }
-                        ctx.request_repaint(); tokio::select! { _ = sleep(Duration::from_secs(p.interval)) => {}, _ = wake.notified() => {} }
+                        ctx.request_repaint();
+                        if Instant::now()>=next_metrics {
+                            let sample=metrics.collect(&conn.client,version,read_all).await;
+                            {state.lock().unwrap().metrics=Some(Arc::new(sample));}
+                            next_metrics=Instant::now()+Duration::from_secs(5);
+                            ctx.request_repaint();
+                        }
+                        tokio::select! { _ = sleep(Duration::from_secs(p.interval)) => {}, _ = wake.notified() => {} }
                     }
                 }
             }

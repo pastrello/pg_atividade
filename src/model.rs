@@ -92,6 +92,7 @@ pub struct Session {
 #[derive(Debug, PartialEq, Eq)]
 pub enum QueryAgeBand { Normal, Green, Yellow, Red }
 impl Session {
+    pub fn is_slow_query(&self)->bool {self.state=="active"&&self.kind=="client backend"&&self.query_age.is_some_and(|t|t.is_finite()&&t>1.0)}
     pub fn query_age_band(&self) -> QueryAgeBand {
         use QueryAgeBand::*;
         if self.state!="active" || self.kind!="client backend" {return Normal;}
@@ -134,6 +135,13 @@ pub fn blocker_chain(sessions: &[Session], target: i32) -> Vec<(i32,i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn slow_query_strict_threshold(){
+        let mut s=Session{state:"active".into(),kind:"client backend".into(),query_age:Some(1.0),..Default::default()};
+        assert!(!s.is_slow_query());s.query_age=Some(1.001);assert!(s.is_slow_query());
+        s.state="idle in transaction".into();assert!(!s.is_slow_query());
+        s.state="active".into();s.kind="walsender".into();assert!(!s.is_slow_query());
+        s.kind="client backend".into();s.query_age=None;assert!(!s.is_slow_query());
+    }
     #[test] fn query_age_bands_exact_boundaries() {
         use QueryAgeBand::*;
         for (t,want) in [(0.0,Normal),(1.999,Normal),(2.0,Green),(4.999,Green),(5.0,Yellow),(9.999,Yellow),(10.0,Red),(3600.0,Red),(f64::NAN,Normal),(f64::INFINITY,Normal)] {
